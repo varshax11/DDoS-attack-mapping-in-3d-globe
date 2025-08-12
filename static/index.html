@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DDoS Attack Globe - Fixed</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html, body { height:100%; margin:0; background:#0b1020; color:#eaecef; font-family: ui-sans-serif,system-ui,Segoe UI,Roboto,Arial; }
+    #controls { position:fixed; top:12px; left:12px; z-index:2; background:rgba(12,15,30,.75); backdrop-filter: blur(6px); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.35);}
+    #controls h1 { font-size:16px; margin:0 0 8px; letter-spacing:.3px; }
+    #controls .row { display:flex; gap:10px; align-items:center; margin:6px 0; font-size:13px; }
+    #controls input[type="range"] { width:160px; }
+    #globe { position: absolute; inset:0; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(255,255,255,.1); }
+    a { color:#8ab4ff; text-decoration:none; }
+    #debug { position:fixed; top:12px; right:12px; z-index:2; background:rgba(12,15,30,.75); backdrop-filter: blur(6px); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:12px 14px; font-size:11px; max-width:300px; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <h1>DDoS Attack Globe</h1>
+    <div class="row">
+      <span class="pill">Threshold</span>
+      <input id="thresh" type="range" min="0" max="100" step="1" value="1" />
+      <span id="threshVal">1</span>
+    </div>
+    <div class="row">
+      <label><input id="autoplay" type="checkbox" checked /> Auto-rotate</label>
+      <label><input id="showLabels" type="checkbox" checked /> Labels</label>
+    </div>
+    <div class="row" style="opacity:.8">
+      <span id="stats">arcs: 0</span>
+    </div>
+    <div class="row">
+      <button id="addTestArc">Add Test Arc</button>
+    </div>
+  </div>
+
+  <div id="debug">
+    <strong>Debug Info:</strong><br>
+    <span id="debugText">Loading...</span>
+  </div>
+
+  <div id="globe"></div>
+
+  <!-- Three.js + Globe.gl from CDN -->
+  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/globe.gl"></script>
+  <script>
+    // --- Debug utilities ---
+    const debugEl = document.getElementById('debugText');
+    function debug(msg) {
+      console.log(msg);
+      debugEl.innerHTML = msg + '<br>' + debugEl.innerHTML.split('<br>').slice(0, 5).join('<br>');
+    }
+
+    // --- Globe setup ---
+    const el = document.getElementById('globe');
+    const world = Globe()(el)
+      .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+      .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+      .backgroundColor('#0b1020')
+      .showAtmosphere(true)
+      .atmosphereColor('#3da9fc')
+      .atmosphereAltitude(0.15)
+      .arcAltitude(d => 0.1 + Math.min(0.5, d.severity / 160))
+      .arcStroke(d => 0.6 + d.severity / 40)
+      .arcsTransitionDuration(600)
+      .arcDashLength(0.6)
+      .arcDashGap(0.3)
+      .arcDashAnimateTime(4000);
+
+    // Arc labels - fix the display
+    world.arcLabel(d => {
+      if (!d) return '';
+      const gbpsText = d.gbps ? `${d.gbps} Gbps` : 'N/A Gbps';
+      const time = d.time ? new Date(d.time).toLocaleTimeString() : 'Unknown time';
+      return `${d.type || 'DDoS'} • ${gbpsText} • Sev ${d.severity || 0}
+${d.origin?.cc || 'XX'} → ${d.target?.cc || 'XX'}
+${time}`;
+    });
+
+    // Controls
+    const controls = world.controls();
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.55;
+
+    // Responsive canvas size
+    function resize() { world.width([window.innerWidth]).height([window.innerHeight]); }
+    window.addEventListener('resize', resize); resize();
+
+    // Severity → color mapping
+    function colorFor(sev) {
+      if (sev >= 85) return '#ff0029';
+      if (sev >= 60) return '#ff6a00';
+      if (sev >= 35) return '#ffb000';
+      return '#60cfff';
+    }
+    world.arcColor(d => colorFor(d.severity || 0));
+
+    // Data state
+    const MAX_ARCS = 500;
+    const arcs = [];
+    const stats = document.getElementById('stats');
+    const threshEl = document.getElementById('thresh');
+    const threshVal = document.getElementById('threshVal');
+    const autoplayEl = document.getElementById('autoplay');
+    const showLabelsEl = document.getElementById('showLabels');
+
+    threshEl.addEventListener('input', () => {
+      threshVal.textContent = threshEl.value;
+      render();
+    });
+    autoplayEl.addEventListener('change', () => { controls.autoRotate = autoplayEl.checked; });
+    showLabelsEl.addEventListener('change', () => { 
+      world.arcLabel(showLabelsEl.checked ? world.arcLabel() : () => ''); 
+    });
+
+    function render() {
+      const minSev = +threshEl.value;
+      const filtered = arcs.filter(a => a.severity >= minSev);
+      debug(`Rendering ${filtered.length} arcs (threshold: ${minSev})`);
+      if (filtered.length > 0) {
+        debug(`Sample arc: ${JSON.stringify(filtered[0])}`);
+      } else {
+        debug(`No arcs above threshold. All severities: ${arcs.map(a => a.severity).join(', ')}`);
+      }
+      world.arcsData(filtered);
+      stats.textContent = `arcs: ${filtered.length}`;
+    }
+
+    // Test arc button
+    document.getElementById('addTestArc').addEventListener('click', () => {
+      const testArc = {
+        startLat: 40.7128, startLng: -74.0060, // New York
+        endLat: 51.5074, endLng: -0.1278,     // London
+        type: 'Test DDoS',
+        gbps: 15.5,
+        severity: 75,
+        origin: { cc: 'US' },
+        target: { cc: 'GB' },
+        time: new Date().toISOString()
+      };
+      arcs.push(testArc);
+      debug(`Added test arc: NYC → London, severity: ${testArc.severity}`);
+      render();
+    });
+
+    // FIXED: Proper arc data mapping
+    function addArc(evt) {
+      // Validate the event data
+      if (!evt || !evt.origin || !evt.target) {
+        debug(`Invalid event data: ${JSON.stringify(evt)}`);
+        return;
+      }
+
+      if (
+        evt.origin.lat == null || evt.origin.lng == null ||
+        evt.target.lat == null || evt.target.lng == null
+      ) {
+        debug(`Missing coordinates in event: ${JSON.stringify(evt)}`);
+        return;
+      }
+
+      // Map server event to Globe.gl arc format
+      // CRITICAL: Globe.gl expects startLat/startLng and endLat/endLng
+      const arc = {
+        startLat: evt.origin.lat, 
+        startLng: evt.origin.lng,
+        endLat: evt.target.lat, 
+        endLng: evt.target.lng,
+        type: evt.type || 'DDoS', 
+        gbps: evt.gbps || 'N/A', 
+        severity: evt.severity || 1,
+        origin: evt.origin, 
+        target: evt.target, 
+        time: evt.time
+      };
+
+      // Skip arcs with identical start/end points (they won't show)
+      if (arc.startLat === arc.endLat && arc.startLng === arc.endLng) {
+        debug(`Skipping arc with identical start/end: ${evt.origin.cc}`);
+        return;
+      }
+
+      arcs.push(arc);
+      if (arcs.length > MAX_ARCS) {
+        arcs.splice(0, arcs.length - MAX_ARCS);
+      }
+
+      debug(`Added arc: ${evt.origin.cc} → ${evt.target.cc} (${arc.startLat},${arc.startLng}) → (${arc.endLat},${arc.endLng})`);
+    }
+
+    // Bootstrap with a REST snapshot
+    fetch(`${location.origin}/api/events`)
+      .then(r => r.json())
+      .then(items => {
+        debug(`Loaded ${items.length} initial events`);
+        items.forEach(addArc);
+        debug(`Arcs array after loading: ${JSON.stringify(arcs)}`);
+        render();
+      })
+      .catch(err => {
+        debug(`Could not load initial events. Please check your backend server and network connection. (${err.message})`);
+      });
+
+    // Live updates via WebSocket
+    const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+const wsUrl = `${wsProtocol}${location.host}/ws`;
+const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      debug('WebSocket connected');
+    };
+    
+    ws.onerror = (err) => {
+      debug(`WebSocket connection error. Please ensure the backend is running and accessible. (${err.message || 'Connection failed'})`);
+    };
+    
+    ws.onclose = () => {
+      debug('WebSocket disconnected. Live updates will stop until connection is restored.');
+    };
+    
+    ws.onmessage = evt => {
+      try {
+        const msg = JSON.parse(evt.data);
+        debug(`WebSocket message: ${msg.kind}`);
+        if (msg.kind === 'snapshot') {
+          debug(`Snapshot with ${msg.items?.length || 0} items`);
+          if (msg.items) {
+            msg.items.forEach(addArc);
+            render();
+          }
+        } else if (msg.kind === 'event') {
+          debug(`New event: ${msg.item?.type || 'unknown'}`);
+          if (msg.item) {
+            addArc(msg.item);
+            render();
+          }
+        }
+      } catch (err) {
+        debug(`Error parsing WebSocket message. Data may be malformed. (${err.message})`);
+      }
+    };
+
+    // Initial debug info
+    debug('Globe initialized, waiting for data...');
+  </script>
+</body>
+</html>
