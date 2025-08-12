@@ -17,8 +17,7 @@ Attacks are shown as animated arcs on a 3D globe in your browser.
 ---
 
 ## Demo
-
-![Screenshot](screenshot.png)
+![Screenshot] <img width="1341" height="761" alt="Screenshot 2025-08-12 at 6 30 28 PM" src="https://github.com/user-attachments/assets/b956076b-8c26-4142-82e3-28a61c9e00cf" />
 
 ---
 
